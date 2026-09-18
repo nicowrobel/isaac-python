@@ -1,9 +1,8 @@
-from .websockethandler import WebSocketHandler, websocket
-import thread
-from base64 import decodestring
-
-from IPython import display
-
+#from .websockethandler import WebSocketHandler, websocket
+from .websockethandler_asyncio import WebSocketHandler
+import threading
+from base64 import standard_b64decode
+import asyncio
 
 class ProtocolHandler(WebSocketHandler):
     """Handles Send and Receive Events in the ISAAC Protocol
@@ -13,14 +12,24 @@ class ProtocolHandler(WebSocketHandler):
     """
     def __init__(self, enable_trace=False):
         """..."""
-        websocket.enableTrace(enable_trace)
-        pass
-
+        # this should be made implementation agnostic, in case I switch to
+        # websockets
+        # TODO: set ip and port and forward it to WebSocketHandler
+        #websocket.enableTrace(enable_trace)
+        self.observe_id = -1
+        # TODO: use default image from webclient
+        self.latest_image = b''
+        
     def run_async(self):
-        self.wsh = WebSocketHandler(self.message_handler, "149.220.62.186")
-        # TODO this is not Python 3 compatible
-        thread.start_new_thread(self.wsh.run_forever, ())
-        #self.wsh.run_forever()
+        self.wsh = WebSocketHandler(self.message_handler, "10.1.24.7", 2459)
+        self.wsh_thread = threading.Thread(target=self.wsh.run_forever)
+        self.wsh_thread.start()
+
+    async def run_asyncio(self):
+        self.wsh = WebSocketHandler(self.message_handler, "10.1.24.7", 2459)
+        await self.wsh.connect()
+        loop = asyncio.get_running_loop()
+        self._listen_task = loop.create_task(self.wsh.run_forever())
 
     def message_handler(self, args):
         #print("ISAAC Message Handler")
@@ -36,52 +45,36 @@ class ProtocolHandler(WebSocketHandler):
 
     def hello_handler(self, payload):
         """Response on connect to server: lists connected visualizations"""
-        print("Hello received:")
-        print("  Server name: {}".format(payload["name"]))
-        print("  Available streams: {}".format(payload["streams"]))
+        print("\nHello received:")
+        print(f"  Server name: {payload["name"]}")
+        print("  Available streams:")
+        for stream in payload["streams"]:
+            print(f"    {stream["name"]} (ID: {stream["id"]})")
 
     def register_handler(self, payload):
         """A new visualization registered at the server"""
-        print("Register received:")
-        print("  Visualization: {}".format(payload["id"]))
+        print("\nRegister received:")
+        print(f"  Visualization ID: {payload["id"]}")
         # TODO check protocol match
         protocol = payload["protocol"]
-        print("  Protocol version: {}.{}".format(protocol[0], protocol[1]))
+        print(f"  Protocol version: {protocol[0]}.{protocol[1]}")
         print("  Sources:")
         for source in payload["sources"]:
-            print(source)
+            print(f"    {source["name"]} ({source["feature dimension"]}D)")
 
     def period_handler(self, payload):
         """A new iteration from the visualization arrived!"""
-        #print("Period received: {}".format(payload["meta nr"]))
-        image_base64 = payload["payload"]
-        # throw away base64 prefix
-        prefix = "data:image/jpeg;base64,"
-        image_base64 = image_base64[len(prefix):]
-        # fix missing padding
-        missing_padding = len(image_base64) % 4
-        if missing_padding != 0:
-            image_base64 += b'='* (4 - missing_padding)
-
-        image_jpg = decodestring(image_base64)
-
-        # don't try this in Firefox v52, use Chromium or something fast
-        display.clear_output(wait=True)
-        image_notebook = display.Image(image_base64, embed=True)
-        display.display(image_notebook)
-        
-        #display.display(display.HTML('<img src="{}" style="display:inline;margin:1px" />'.format(prefix + image_base64)))
-
-        #image_name = "received_{}.jpg".format(payload["meta nr"])
-        #print("Write: {}".format(image_name))
-        #with open(image_name, "wb") as fh:
-        #    fh.write(image_jpg)
+        #print(f"Period received: {payload["meta nr"]}")
+        if "payload" in payload:
+            image_base64 = payload["payload"]
+            #image_jpg = self.image_decoder(image_base64)
+            self.latest_image = image_base64
 
     def exit_handler(self, payload):
-        """The visualization exited!"""
-        #print("Exit received!")
+        """A visualization exited!"""
+        print(f"\nExit received from visualization {payload["id"]}!")
 
-    def send_observe(self, observe_id, stream=0, dropable=False):
+    async def send_observe(self, observe_id: int, stream: int=0, dropable: bool=False):
         """Register to receive 'period' messages from a visualization
 
         Parameters
@@ -93,14 +86,16 @@ class ProtocolHandler(WebSocketHandler):
         dropable: bool
             If True: it is okay to drop 'period' updates on slow connections.
         """
-        #print("Sending observe!")
+        print("Sending observe!")
+        # TODO: What happens, when I send multiple observes?!
+        self.observe_id = observe_id
         d = {
             'type': 'observe',
-            'observe id': observe_id,
+            'observe id': self.observe_id,
             'stream': stream,
             'dropable': dropable
         }
-        self.wsh.send_message(d)
+        await self.wsh.send_message(d)
 
     def send_feedback(self, args):
         """adjust variables of the visualization"""
@@ -108,17 +103,24 @@ class ProtocolHandler(WebSocketHandler):
         d = {
             'type': 'feedback'
         }
+        # changes and adds keys to dictionary
         d.update(args)
         self.wsh.send_message(d)
 
-    def send_stop(self, observe_id):
+    def send_stop(self):
         """disconnect from a visualization: stop getting 'period' messages from it"""
-        #print("Stop receiving updates from a visualization {}".format(observe_id))
+        # return, if no visualization is observered
+        if self.observe_id < 0:
+            print("Currently not observing any visualization")
+            return
+        print(f"Stop receiving updates from visualization {self.observe_id}")
         d = {
             'type': 'stop',
-            'observe id': observe_id
+            'observe id': self.observe_id
         }
         self.wsh.send_message(d)
+        # reset observation id
+        self.observe_id = -1
 
     def send_closed(self):
         """disconnect from the isaac server"""
@@ -128,14 +130,19 @@ class ProtocolHandler(WebSocketHandler):
         }
         self.wsh.send_message(d)
 
-
-if __name__ == "__main__":
-    import time
-
-    app = ISAACHandler()
-    app.run_async()
-    time.sleep(2)
-    # testing: blindly connect to the first available visualization
-    app.send_observe(0, dropable=True)
-    time.sleep(200)
-
+    @staticmethod
+    def image_decoder(payload):
+        """
+        Decode image from base64 back to binary jpeg
+        """
+        image_base64 = payload
+        # throw away base64 prefix
+        prefix = "data:image/jpeg;base64,"
+        image_base64 = image_base64[len(prefix):]
+        # fix missing padding
+        missing_padding = len(image_base64) % 4
+        if missing_padding != 0:
+            image_base64 += '='* (4 - missing_padding)
+        
+        image_binary = standard_b64decode(image_base64)
+        return image_binary

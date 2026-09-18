@@ -1,4 +1,5 @@
-import websocket
+#import websocket
+import websockets.asyncio.client as websocket
 import json
 
 class WebSocketHandler:
@@ -6,29 +7,30 @@ class WebSocketHandler:
 
     def __init__(self, msg_handler=None, ip="127.0.0.1", port: int=2459):
         """connect to an ISAAC server service"""
-        self.ws = websocket.WebSocketApp(
-            'ws://{}:{}'.format(ip, port),
+        self.uri = f'ws://{ip}:{port}'
+        self.msg_handler = msg_handler
+        self.ws = None
+
+    async def connect(self):
+        self.ws = await websocket.connect(
+            self.uri,
             subprotocols=['isaac-json-protocol'],
-            on_message = self.on_message,
-            on_error = self.on_error,
-            on_close = self.on_close
+            compression=None,
         )
-        self.ws.on_open = self.on_open
-        self.ws.msg_handler = msg_handler
-
-    def run_forever(self):
+        
+    async def run_forever(self):
         print("WebSocketHandler: Start run!")
-        self.ws.run_forever()
+        async for message in self.ws:
+            await self.on_message(message)
 
-    @staticmethod
-    def on_message(ws, message):
+    async def on_message(self, message):
         #print("WebSocketHandler: Message Handler")
 
         # this is potentially dangerous
         d = json.loads(message)
 
-        if ws.msg_handler is not None:
-            ws.msg_handler(d)
+        if self.msg_handler is not None:
+            self.msg_handler(d)
         else:
             print("WebSocketHandler: No message handler registered!")
 
@@ -46,9 +48,9 @@ class WebSocketHandler:
     def on_open(ws):
         pass
 
-    def send_message(self, args):
+    async def send_message(self, args):
         json_args = json.dumps(args)
         #print("WebSocketHandler: Send")
         #print(json_args)
-        self.ws.send(json_args)
+        await self.ws.send(json_args)
 
