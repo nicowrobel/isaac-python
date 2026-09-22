@@ -40,14 +40,13 @@ class ProtocolHandler(WebSocketHandler):
 
     async def message_handler(self, payload):
         """Handles incomming messages"""
-        #print("ISAAC Message Handler")
-        if args["type"] == "hello":
+        if payload["type"] == "hello":
             self.hello_handler(payload)
-        if args["type"] == "register":
+        if payload["type"] == "register":
             self.register_handler(payload)
-        if args["type"] == "period":
+        if payload["type"] == "period":
             await self.period_handler(payload)
-        if args["type"] == "exit":
+        if payload["type"] == "exit":
             self.exit_handler(payload)
 
     def hello_handler(self, payload):
