@@ -7,41 +7,48 @@ import asyncio
 class ProtocolHandler(WebSocketHandler):
     """Handles Send and Receive Events in the ISAAC Protocol
 
-    This is done via the kernel, so expect the most indirect way to get your
+    Comment Axel: This is done via the kernel, so expect the most indirect way to get your
     image (but also the most reliable in case you are tunneling your notebook).
     """
-    def __init__(self, enable_trace=False):
+    def __init__(self, ip: str ="127.0.0.1", port: int=2459, verbose: bool=False):
         """..."""
-        # this should be made implementation agnostic, in case I switch to
-        # websockets
-        # TODO: set ip and port and forward it to WebSocketHandler
-        #websocket.enableTrace(enable_trace)
+        self.verbose = verbose
+        self.ip = ip
+        self.port = port
         self.observe_id = -1
         # TODO: use default image from webclient
         self.latest_image = b''
-        
+        self.last_step = -1
+        # TODO: make setter
+        self.response_handler = None
+
+    # old thread based version, currently unused
     def run_async(self):
-        self.wsh = WebSocketHandler(self.message_handler, "10.1.24.7", 2459)
+        self.wsh = WebSocketHandler(self.message_handler, self.ip, self.port)
         self.wsh_thread = threading.Thread(target=self.wsh.run_forever)
         self.wsh_thread.start()
 
-    async def run_asyncio(self):
-        self.wsh = WebSocketHandler(self.message_handler, "10.1.24.7", 2459)
+    # newer asyncio version
+    async def run_async_io(self):
+        """Create WebSocketHandler object, connect and put receiver into
+        background task.
+        """
+        self.wsh = WebSocketHandler(self.message_handler, self.ip, self.port)
         await self.wsh.connect()
         loop = asyncio.get_running_loop()
         self._listen_task = loop.create_task(self.wsh.run_forever())
 
-    def message_handler(self, args):
+    async def message_handler(self, payload):
+        """Handles incomming messages"""
         #print("ISAAC Message Handler")
-
         if args["type"] == "hello":
-            self.hello_handler(args)
+            self.hello_handler(payload)
         if args["type"] == "register":
-            self.register_handler(args)
+            self.register_handler(payload)
         if args["type"] == "period":
-            self.period_handler(args)
+            await self.period_handler(payload)
         if args["type"] == "exit":
-            self.exit_handler(args)
+            self.exit_handler(payload)
 
     def hello_handler(self, payload):
         """Response on connect to server: lists connected visualizations"""
@@ -62,17 +69,32 @@ class ProtocolHandler(WebSocketHandler):
         for source in payload["sources"]:
             print(f"    {source["name"]} ({source["feature dimension"]}D)")
 
-    def period_handler(self, payload):
-        """A new iteration from the visualization arrived!"""
-        #print(f"Period received: {payload["meta nr"]}")
+    async def period_handler(self, payload):
+        """Handle new iterations from visualization"""
+        if self.verbose:
+            print(f"Period received:\n{payload}\n")
+        # Store last received time step of sim
+        if "time step" in payload["metadata"]:
+            self.last_step = payload["metadata"]["time step"]
+            # respond handler can be used to send feedback upon receiving messages
+            # which uses the last received time step
+            if self.response_handler != None:
+                response = self.response_handler(self.last_step)
+                #print("send response")
+                await self.send_feedback(response)
+
+        # process incoming images
         if "payload" in payload:
-            image_base64 = payload["payload"]
+            #image_base64 = payload["payload"]
             #image_jpg = self.image_decoder(image_base64)
-            self.latest_image = image_base64
+            #self.latest_image = image_base64
+            ...
 
     def exit_handler(self, payload):
         """A visualization exited!"""
         print(f"\nExit received from visualization {payload["id"]}!")
+        if payload["id"] == self.observe_id:
+            self.observe_id = -1
 
     async def send_observe(self, observe_id: int, stream: int=0, dropable: bool=False):
         """Register to receive 'period' messages from a visualization
@@ -86,50 +108,61 @@ class ProtocolHandler(WebSocketHandler):
         dropable: bool
             If True: it is okay to drop 'period' updates on slow connections.
         """
-        print("Sending observe!")
-        # TODO: What happens, when I send multiple observes?!
-        self.observe_id = observe_id
-        d = {
-            'type': 'observe',
-            'observe id': self.observe_id,
-            'stream': stream,
-            'dropable': dropable
-        }
-        await self.wsh.send_message(d)
+        # Currently, only one visualisation can be observed at a time
+        # TODO: check, if the id is actually registered
+        # TODO: Should I support multiple observes?!
+        if self.observe_id > -1:
+            print("Already observing a visualization. Please call `send_stop()` fist!")
+        else:
+            print("Sending observe!")
+            self.observe_id = observe_id
+            d = {
+                'type': 'observe',
+                'observe id': self.observe_id,
+                'stream': stream,
+                'dropable': dropable
+            }
+            await self.wsh.send_message(d)
 
-    def send_feedback(self, args):
+    async def send_feedback(self, args: dict[str]):
         """adjust variables of the visualization"""
-        #print("Send feedback to visualization!")
+        # TODO: maybe make 'observe id' overwritable
         d = {
-            'type': 'feedback'
+            'type': 'feedback',
+            'observe id': self.observe_id
         }
         # changes and adds keys to dictionary
         d.update(args)
-        self.wsh.send_message(d)
+        await self.wsh.send_message(d)
+        if self.verbose:
+            print(f"Feedback sent:\n{d}\n")
 
-    def send_stop(self):
+
+    async def send_stop(self):
         """disconnect from a visualization: stop getting 'period' messages from it"""
         # return, if no visualization is observered
         if self.observe_id < 0:
             print("Currently not observing any visualization")
-            return
-        print(f"Stop receiving updates from visualization {self.observe_id}")
-        d = {
-            'type': 'stop',
-            'observe id': self.observe_id
-        }
-        self.wsh.send_message(d)
-        # reset observation id
-        self.observe_id = -1
+        else:
+            d = {
+                'type': 'stop',
+                'observe id': self.observe_id
+            }
+            await self.wsh.send_message(d)
+            print(f"Stop receiving updates from visualization {self.observe_id}")
+            # reset observation id
+            self.observe_id = -1
 
-    def send_closed(self):
+    async def send_closed(self):
         """disconnect from the isaac server"""
-        #print("Disconnecting from server!")
+        print("Disconnecting from server!")
         d = {
             'type': 'closed'
         }
-        self.wsh.send_message(d)
+        await self.wsh.send_message(d)
+        # do i need to call self.wsh.ws.close() or would that be redundant?
 
+    # currently unused
     @staticmethod
     def image_decoder(payload):
         """
