@@ -2,25 +2,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def alpha_fct_default(value):
-    """
-    default alpha function that converts a x in [0, 1] to an alpha valaue [0,1]
-    this is a default and example implementation
-    """
-    if value < 0.05:
-        return 0.0
-    else:
-        return 0.8 * value**0.5
-
 def createTransferFunction(colorMap,
-                           alpha_fct = alpha_fct_default,
                            N_samples = 10):
+                           alpha_fct = lambda x: x,
     """
     convert a matplotlib cmap to a ISAAC rgba dict for use in the transfer function
 
     colorMap ... matplotlib cmap
-    alpha ... a function of f(x)->[0,1] for x in [0,1] for alpha values
+    alpha_fct ... a function of f(x)->[0,1] for x in [0,1] for alpha values [default: f(x)=x]
     N_samples ... number of equidistant sample points for the ISAAC rgba dict [default: 10]
+    isaac_scaling ... scaling factor used by ISAAC [default: 1024]
     """
     rgba = []
     isaac_scaling = 1024
