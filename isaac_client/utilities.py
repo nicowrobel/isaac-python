@@ -5,20 +5,20 @@ import matplotlib.pyplot as plt
 def createTransferFunction(colorMap,
                            alpha_fct = lambda x: x,
                            N_samples = 10,
-                           isaac_scaling = 1024):
+                           isaac_transferSize = 1024):
     """
     convert a matplotlib cmap to a ISAAC rgba dict for use in the transfer function
 
     colorMap ... matplotlib cmap
     alpha_fct ... a function of f(x)->[0,1] for x in [0,1] for alpha values [default: f(x)=x]
     N_samples ... number of equidistant sample points for the ISAAC rgba dict [default: 10]
-    isaac_scaling ... scaling factor used by ISAAC [default: 1024]
+    isaac_transferSize ... factor `T_transferSize` used by ISAAC [default: 1024]
     """
     rgba = []
     
     for value in np.linspace(0,1,N_samples):
         r,g,b = colorMap(value)[:3]
-        new_dict = {'value': value * isaac_scaling,
+        new_dict = {'value': value * isaac_transferSize,
                     'r': r, 'g': g, 'b': b, 'a': alpha_fct(value) }
         rgba.append(new_dict)
 
